@@ -2,23 +2,29 @@ import React, { useState, useEffect } from "react";
 import {
   subscribeWallets,
   subscribeCategories,
+  subscribeTransactions,
   addTransaction,
 } from "../services/db";
-import { Wallet, Category, TransactionType } from "../types";
+import { Wallet, Category, Transaction, TransactionType } from "../types";
 import TransactionModal from "../components/TransactionModal";
+import CsvImportModal from "../components/CsvImportModal";
 
 const RegistrationPage: React.FC = () => {
   const [modalType, setModalType] = useState<TransactionType | null>(null);
+  const [isCsvImportOpen, setIsCsvImportOpen] = useState(false);
   const [wallets, setWallets] = useState<Wallet[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
+  const [transactions, setTransactions] = useState<Transaction[]>([]);
 
   useEffect(() => {
     const unsubscribeWallets = subscribeWallets(setWallets);
     const unsubscribeCategories = subscribeCategories(setCategories);
+    const unsubscribeTransactions = subscribeTransactions(setTransactions);
 
     return () => {
       unsubscribeWallets();
       unsubscribeCategories();
+      unsubscribeTransactions();
     };
   }, []);
 
@@ -52,6 +58,15 @@ const RegistrationPage: React.FC = () => {
       >
         移動
       </button>
+      <button
+        onClick={() => setIsCsvImportOpen(true)}
+        className="w-full h-24 bg-purple-100 hover:bg-purple-200 sketch-border flex flex-col items-center justify-center text-purple-800 transition-colors shadow-sm active:translate-y-0.5"
+      >
+        <span className="text-2xl font-bold">CSV取り込み</span>
+        <span className="mt-1 text-xs font-medium">
+          PayPay・クレジットカード
+        </span>
+      </button>
 
       {modalType && (
         <TransactionModal
@@ -60,6 +75,23 @@ const RegistrationPage: React.FC = () => {
           categories={categories}
           onClose={() => setModalType(null)}
           onSave={handleSave}
+        />
+      )}
+
+      {isCsvImportOpen && (
+        <CsvImportModal
+          wallets={wallets}
+          categories={categories}
+          existingTransactions={transactions}
+          onClose={() => setIsCsvImportOpen(false)}
+          onImported={(count, skippedCount) => {
+            setIsCsvImportOpen(false);
+            alert(
+              skippedCount > 0
+                ? `${count}件の明細を登録しました。登録済みの${skippedCount}件はスキップしました。`
+                : `${count}件の明細を登録しました。`,
+            );
+          }}
         />
       )}
     </div>

@@ -112,8 +112,10 @@ const Layout: React.FC = () => {
 
           const cardUsageTransactions = transactions.filter(
             (tx) =>
-              tx.fromWalletId === card.id &&
-              tx.type !== "withdrawal",
+              (tx.fromWalletId === card.id && tx.type !== "withdrawal") ||
+              (tx.type === "income" &&
+                tx.toWalletId === card.id &&
+                Boolean(tx.paymentMonth)),
           );
           const existingWithdrawals = transactions.filter(
             (tx) => tx.type === "withdrawal" && tx.toWalletId === card.id,

@@ -425,12 +425,13 @@ const AggregationPage: React.FC = () => {
                       ¥{tx.amount.toLocaleString()}
                     </td>
                     <td className="px-2 py-4 text-center">
-                      <div className="flex justify-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex justify-center space-x-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                         {tx.type !== "withdrawal" && (
                           <button
                             onClick={() => setEditingTx(tx)}
                             className="p-1 hover:bg-blue-100 rounded text-blue-600"
                             title="編集"
+                            aria-label={`${tx.description || "取引"}を編集`}
                           >
                             <EditIcon />
                           </button>
@@ -439,6 +440,7 @@ const AggregationPage: React.FC = () => {
                           onClick={() => handleDeleteTx(tx.id)}
                           className="p-1 hover:bg-red-100 rounded text-red-600"
                           title="削除"
+                          aria-label={`${tx.description || "取引"}を削除`}
                         >
                           <TrashIcon />
                         </button>

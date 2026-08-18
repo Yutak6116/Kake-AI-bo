@@ -43,6 +43,10 @@ export interface Transaction {
   isAutoCreated?: boolean;
   isReimbursement?: boolean; // 立替申請フラグ
   isReimbursed?: boolean; // 立替済みフラグ
+  importSource?: "paypay" | "credit-card";
+  importFingerprint?: string;
+  importExternalId?: string;
+  importedAt?: string;
   description: string; // "内容"
   note: string; // "備考"
 }
