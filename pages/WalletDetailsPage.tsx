@@ -40,6 +40,11 @@ type WalletChartPoint = {
 const getTransactionCreatedAtTime = (tx: Transaction) =>
   tx.createdAt ? new Date(tx.createdAt).getTime() : 0;
 
+const getCardUsageDelta = (cardId: string, tx: Transaction) =>
+  tx.type === "income" && tx.toWalletId === cardId && tx.paymentMonth
+    ? -tx.amount
+    : tx.amount;
+
 const EditIcon = () => (
   <svg
     xmlns="http://www.w3.org/2000/svg"
@@ -210,8 +215,14 @@ const WalletDetailsPage: React.FC = () => {
       if (!searchMatches) return false;
 
       if (wallet?.type === "card") {
-        if (tx.fromWalletId !== wallet.id) return false;
-        const paymentMonth = getCardPaymentMonth(wallet, tx);
+        const isRefund =
+          tx.type === "income" &&
+          tx.toWalletId === wallet.id &&
+          Boolean(tx.paymentMonth);
+        if (tx.fromWalletId !== wallet.id && !isRefund) return false;
+        const paymentMonth = isRefund
+          ? tx.paymentMonth
+          : getCardPaymentMonth(wallet, tx);
         return paymentMonth === selectedPaymentMonth;
       }
 
@@ -257,7 +268,7 @@ const WalletDetailsPage: React.FC = () => {
       let runningUsage = 0;
 
       return sortedTransactions.reduce<Record<string, number>>((acc, { tx }) => {
-        runningUsage += tx.amount;
+        runningUsage += getCardUsageDelta(wallet.id, tx);
         acc[tx.id] = runningUsage;
         return acc;
       }, {});
@@ -318,7 +329,7 @@ const WalletDetailsPage: React.FC = () => {
 
         sortedTransactions.forEach((tx) => {
           if (tx.date === currentDateStr) {
-            runningUsage += tx.amount;
+            runningUsage += getCardUsageDelta(wallet.id, tx);
           }
         });
 
@@ -829,12 +840,13 @@ const WalletDetailsPage: React.FC = () => {
                         : "-"}
                     </td>
                     <td className="px-2 py-4 text-center">
-                      <div className="flex justify-center space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex justify-center space-x-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
                         {tx.type !== "withdrawal" && (
                           <button
                             onClick={() => setEditingTx(tx)}
                             className="p-1 hover:bg-blue-100 rounded text-blue-600"
                             title="編集"
+                            aria-label={`${tx.description || "取引"}を編集`}
                           >
                             <EditIcon />
                           </button>
@@ -843,6 +855,7 @@ const WalletDetailsPage: React.FC = () => {
                           onClick={() => handleDeleteTx(tx.id)}
                           className="p-1 hover:bg-red-100 rounded text-red-600"
                           title="削除"
+                          aria-label={`${tx.description || "取引"}を削除`}
                         >
                           <TrashIcon />
                         </button>

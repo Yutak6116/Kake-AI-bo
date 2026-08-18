@@ -19,6 +19,25 @@ export const formatMonthLabel = (monthKey: string) => {
   return `${year}年${Number(month)}月`;
 };
 
+const createDateWithClampedDay = (
+  year: number,
+  monthIndex: number,
+  requestedDay: number,
+) => {
+  const normalizedMonth = new Date(year, monthIndex, 1);
+  const lastDay = new Date(
+    normalizedMonth.getFullYear(),
+    normalizedMonth.getMonth() + 1,
+    0,
+  ).getDate();
+  const day = Math.min(Math.max(Math.trunc(requestedDay) || 1, 1), lastDay);
+  return new Date(
+    normalizedMonth.getFullYear(),
+    normalizedMonth.getMonth(),
+    day,
+  );
+};
+
 export const calcCreditPaymentDate = (
   transactionDateStr: string,
   closingDay: number,
@@ -28,7 +47,9 @@ export const calcCreditPaymentDate = (
   let closingYear = d.getFullYear();
   let closingMonth = d.getMonth();
   if (d.getDate() > closingDay) closingMonth += 1;
-  return formatDateLocal(new Date(closingYear, closingMonth + 1, paymentDay));
+  return formatDateLocal(
+    createDateWithClampedDay(closingYear, closingMonth + 1, paymentDay),
+  );
 };
 
 export const getScheduledPaymentDateForMonth = (
@@ -36,7 +57,9 @@ export const getScheduledPaymentDateForMonth = (
   paymentMonthKey: string,
 ) => {
   const [year, month] = paymentMonthKey.split("-").map(Number);
-  return formatDateLocal(new Date(year, month - 1, card.paymentDay || 26));
+  return formatDateLocal(
+    createDateWithClampedDay(year, month - 1, card.paymentDay || 26),
+  );
 };
 
 export const getCardPaymentMonth = (card: Wallet, tx: Transaction) => {
@@ -70,12 +93,16 @@ export const getUpcomingCardPaymentDates = (
   referenceDate: Date = new Date(),
 ) => {
   const paymentDay = card.paymentDay || 26;
-  const current = new Date(
+  const current = createDateWithClampedDay(
     referenceDate.getFullYear(),
     referenceDate.getMonth(),
     paymentDay,
   );
-  const next = new Date(current.getFullYear(), current.getMonth() + 1, paymentDay);
+  const next = createDateWithClampedDay(
+    current.getFullYear(),
+    current.getMonth() + 1,
+    paymentDay,
+  );
 
   return { current, next };
 };
@@ -86,8 +113,17 @@ export const getCardPaymentAmountForMonth = (
   paymentMonthKey: string,
 ) => {
   return transactions
-    .filter((tx) => tx.fromWalletId === card.id)
     .reduce((acc, tx) => {
+      if (tx.type === "withdrawal") return acc;
+
+      const isRefund =
+        tx.type === "income" &&
+        tx.toWalletId === card.id &&
+        Boolean(tx.paymentMonth) &&
+        tx.paymentMonth === paymentMonthKey;
+      if (isRefund) return acc - tx.amount;
+
+      if (tx.fromWalletId !== card.id) return acc;
       if (getCardPaymentMonth(card, tx) !== paymentMonthKey) return acc;
       return acc + tx.amount;
     }, 0);

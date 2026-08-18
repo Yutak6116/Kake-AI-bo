@@ -10,6 +10,7 @@ import {
   onSnapshot,
   QueryConstraint,
   Unsubscribe,
+  runTransaction,
 } from "firebase/firestore";
 import { onAuthStateChanged } from "firebase/auth";
 import { db } from "../firebase";
@@ -248,6 +249,82 @@ export const addTransaction = async (
     userId: uid,
     createdAt: tx.createdAt ?? new Date().toISOString(),
   });
+};
+
+export const addTransactions = async (
+  txs: Array<Omit<Transaction, "id" | "userId">>,
+): Promise<number> => {
+  if (txs.length === 0) return 0;
+
+  const uid = getUserId();
+  const transactionsCollection = collection(db, "transactions");
+  const batchSize = 200;
+  const timestamp = Date.now();
+  const importedAtFallback = new Date(timestamp).toISOString();
+  let committedCount = 0;
+
+  for (let start = 0; start < txs.length; start += batchSize) {
+    const chunk = txs.slice(start, start + batchSize);
+    const prepared = chunk.map((tx, chunkIndex) => {
+      const { importedAt, ...transaction } = tx;
+      const index = start + chunkIndex;
+      const transactionRef = tx.importFingerprint
+        ? doc(
+            transactionsCollection,
+            `import_${uid}_${encodeURIComponent(
+              tx.importFingerprint,
+            )}`,
+          )
+        : doc(transactionsCollection);
+      const resolvedImportedAt =
+        importedAt ?? (tx.importSource ? importedAtFallback : undefined);
+
+      const data = {
+        ...transaction,
+        userId: uid,
+        createdAt:
+          tx.createdAt ?? new Date(timestamp + index).toISOString(),
+        ...(resolvedImportedAt !== undefined
+          ? { importedAt: resolvedImportedAt }
+          : {}),
+      };
+      const sanitizedData = Object.fromEntries(
+        Object.entries(data).filter(([, value]) => value !== undefined),
+      );
+
+      return {
+        transactionRef,
+        data: sanitizedData,
+        preventsDuplicates: Boolean(tx.importFingerprint),
+      };
+    });
+
+    let insertedInChunk = 0;
+    await runTransaction(db, async (firestoreTransaction) => {
+      const existingDocuments = await Promise.all(
+        prepared.map(({ transactionRef, preventsDuplicates }) =>
+          preventsDuplicates
+            ? firestoreTransaction.get(transactionRef)
+            : Promise.resolve(null),
+        ),
+      );
+      let insertedInAttempt = 0;
+      const scheduledDocumentPaths = new Set<string>();
+
+      prepared.forEach(({ transactionRef, data }, index) => {
+        if (existingDocuments[index]?.exists()) return;
+        if (scheduledDocumentPaths.has(transactionRef.path)) return;
+        firestoreTransaction.set(transactionRef, data);
+        scheduledDocumentPaths.add(transactionRef.path);
+        insertedInAttempt += 1;
+      });
+
+      insertedInChunk = insertedInAttempt;
+    });
+    committedCount += insertedInChunk;
+  }
+
+  return committedCount;
 };
 
 export const updateTransaction = async (
