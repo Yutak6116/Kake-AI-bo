@@ -49,6 +49,7 @@ export interface CsvImportDraft {
   paymentMonth?: string;
   importSource: CsvImportSource;
   importFingerprint: string;
+  importFingerprintAliases?: string[];
   importExternalId?: string;
   warnings: string[];
 }
@@ -372,24 +373,136 @@ const isPayPayHeaders = (headers: string[]) => {
 
 const stripBom = (text: string) => text.replace(/^\uFEFF/, "");
 
-const isSmbcVpassDetailRow = (values: string[]) => {
-  if (values.length < 6 || values.length > MAX_COLUMNS) return false;
-  const normalized = values.map((value) => value.normalize("NFKC").trim());
-  if (!/^\d{4}\/\d{1,2}\/\d{1,2}$/.test(normalized[0])) return false;
-  if (!normalized[1]) return false;
-  const billedAmount = normalized[5]
+type SmbcVpassLayout = "billing-statement" | "detail-list";
+
+const SMBC_VPASS_HEADERS = [
+  "利用日",
+  "利用店名",
+  "利用金額",
+  "支払区分",
+  "今回回数",
+  "請求金額",
+  "備考",
+  "支払月",
+];
+
+const isSmbcAmountCell = (input: string) => {
+  const value = input
+    .normalize("NFKC")
+    .trim()
     .replace(/^[¥￥$]\s*/, "")
     .replace(/[,，\s]/g, "")
     .replace(/円$/, "");
   return /^(?:[+\-−ー▲△]?\d+(?:\.0+)?|\(\d+(?:\.0+)?\))$/.test(
-    billedAmount,
+    value,
   );
+};
+
+const isSmbcEmptyAmountCell = (input: string) => {
+  const value = input.normalize("NFKC").trim();
+  return !value || /^[\-−ー―–—]+$/.test(value);
+};
+
+const isSmbcVpassBillingStatementRow = (values: string[]) => {
+  if (values.length < 6 || values.length > MAX_COLUMNS) return false;
+  const normalized = values.map((value) => value.normalize("NFKC").trim());
+  if (!/^\d{4}\/\d{1,2}\/\d{1,2}$/.test(normalized[0])) return false;
+  if (!normalized[1]) return false;
+  return isSmbcAmountCell(normalized[5]);
+};
+
+const isSmbcVpassPaymentMonth = (input: string) =>
+  /^[\u0027\u2018\u2019`]?\d{2}(?:\d{2})?\/(?:0?[1-9]|1[0-2])$/.test(
+    input.normalize("NFKC").trim(),
+  );
+
+const isSmbcVpassDetailListRow = (values: string[]) => {
+  // 支払予定月を含む見出しなし13列形式。列数と支払月も確認し、
+  // 同じ位置に日付・金額がある他社CSVをVpassとして誤判定しないようにする。
+  if (values.length < 13 || values.length > MAX_COLUMNS) return false;
+  const normalized = values.map((value) => value.normalize("NFKC").trim());
+  if (!/^\d{4}\/\d{1,2}\/\d{1,2}$/.test(normalized[0])) return false;
+  if (!normalized[1] || !isSmbcAmountCell(normalized[6])) return false;
+  if (
+    !isSmbcEmptyAmountCell(normalized[7]) &&
+    !isSmbcAmountCell(normalized[7])
+  ) {
+    return false;
+  }
+  return isSmbcVpassPaymentMonth(normalized[5]);
 };
 
 const looksLikeSmbcVpassDateRow = (values: string[]) =>
   /^\d{4}\/\d{1,2}\/\d{1,2}$/.test(
     (values[0] || "").normalize("NFKC").trim(),
   );
+
+const normalizeSmbcVpassPaymentMonth = (input: string) => {
+  const value = input.normalize("NFKC").trim();
+  if (!value) return "";
+  const match =
+    /^[\u0027\u2018\u2019`]?(\d{2})\/(\d{1,2})$/.exec(value) ||
+    /^(\d{4})\/(\d{1,2})$/.exec(value);
+  if (!match) return value;
+
+  const year =
+    match[1].length === 2 ? 2000 + Number(match[1]) : Number(match[1]);
+  const month = Number(match[2]);
+  if (month < 1 || month > 12) return value;
+  return `${year}-${String(month).padStart(2, "0")}`;
+};
+
+const joinSmbcNoteFields = (
+  fields: Array<[label: string, value: string]>,
+) =>
+  fields
+    .map(([label, value]) => [label, value.trim()] as const)
+    .filter(([, value]) => value && !/^[\-−ー―–—]+$/.test(value))
+    .map(([label, value]) => `${label}: ${value}`)
+    .join(" / ");
+
+const normalizeSmbcVpassRow = (
+  values: string[],
+  layout: SmbcVpassLayout,
+) => {
+  if (layout === "billing-statement") {
+    return [
+      ...Array.from({ length: 6 }, (_, column) =>
+        (values[column] || "").trim(),
+      ),
+      values
+        .slice(6)
+        .map((value) => value.trim())
+        .filter(Boolean)
+        .join(" / "),
+    ];
+  }
+
+  const usedAmount = (values[6] || "").trim();
+  const billedAmount = isSmbcEmptyAmountCell(values[7] || "")
+    ? ""
+    : (values[7] || "").trim();
+  const note = joinSmbcNoteFields([
+    ["利用者", values[2] || ""],
+    ["内手数料", values[8] || ""],
+    ["現地通貨額", values[9] || ""],
+    ["通貨", values[10] || ""],
+    ["換算レート", values[11] || ""],
+    ["換算日", values[12] || ""],
+    ["補足", values.slice(13).filter(Boolean).join(" / ")],
+  ]);
+
+  return [
+    (values[0] || "").trim(),
+    (values[1] || "").trim(),
+    usedAmount,
+    (values[3] || "").trim(),
+    (values[4] || "").trim(),
+    billedAmount || usedAmount,
+    note,
+    normalizeSmbcVpassPaymentMonth(values[5] || ""),
+  ];
+};
 
 export const readCsvFile = async (
   file: File,
@@ -437,7 +550,6 @@ export const parseCsvDocument = (
 
   const delimiter = detectDelimiter(text);
   const matrix = parseDelimitedText(text, delimiter);
-  if (matrix.length < 2) throw new Error("CSVに明細がありません。");
 
   let headerIndex = -1;
   let bestScore = -1;
@@ -454,9 +566,15 @@ export const parseCsvDocument = (
     rowNumber: index + 1,
     values,
   }));
-  const hasSmbcDetailRow = indexedRows.some((row) =>
-    isSmbcVpassDetailRow(row.values),
-  );
+  const smbcVpassLayout: SmbcVpassLayout | undefined = indexedRows.some(
+    (row) => isSmbcVpassDetailListRow(row.values),
+  )
+    ? "detail-list"
+    : indexedRows.some((row) =>
+          isSmbcVpassBillingStatementRow(row.values),
+        )
+      ? "billing-statement"
+      : undefined;
   const bestNonDateHeaderScore = indexedRows
     .slice(0, searchLimit)
     .filter((row) => !looksLikeSmbcVpassDateRow(row.values))
@@ -467,23 +585,14 @@ export const parseCsvDocument = (
 
   if (
     selection !== "paypay" &&
-    hasSmbcDetailRow &&
+    smbcVpassLayout &&
     bestNonDateHeaderScore < 10
   ) {
     const smbcRows = indexedRows
       .filter((row) => looksLikeSmbcVpassDateRow(row.values))
       .map((row) => ({
         rowNumber: row.rowNumber,
-        values: [
-          ...Array.from({ length: 6 }, (_, column) =>
-            (row.values[column] || "").trim(),
-          ),
-          row.values
-            .slice(6)
-            .map((value) => value.trim())
-            .filter(Boolean)
-            .join(" / "),
-        ],
+        values: normalizeSmbcVpassRow(row.values, smbcVpassLayout),
       }));
     if (smbcRows.length > MAX_DATA_ROWS) {
       throw new Error(
@@ -491,15 +600,7 @@ export const parseCsvDocument = (
       );
     }
     return {
-      headers: [
-        "利用日",
-        "利用店名",
-        "利用金額",
-        "支払区分",
-        "支払回数",
-        "請求金額",
-        "備考",
-      ],
+      headers: SMBC_VPASS_HEADERS,
       rows: smbcRows,
       delimiter,
       detectedSource: "credit-card",
@@ -584,6 +685,7 @@ export const detectCsvColumnMapping = (
       description: 1,
       amount: 5,
       note: 6,
+      paymentMonth: 7,
     };
   }
 
@@ -797,6 +899,7 @@ export const buildImportDrafts = (
   const drafts: CsvImportDraft[] = [];
   const issues: CsvImportIssue[] = [];
   const occurrences = new Map<string, number>();
+  const legacyOccurrences = new Map<string, number>();
 
   if (mapping.date === undefined) {
     issues.push({ message: "日付の列を割り当ててください。" });
@@ -922,20 +1025,33 @@ export const buildImportDrafts = (
     const rawSignature = row.values
       .map((value) => value.normalize("NFKC").trim())
       .join("\u001f");
+    const normalizedDescription = description.normalize("NFKC").trim();
     // PayPayでは、1つの取引番号を支払い・付随明細など複数行が共有する。
     // 取引番号だけでは正当な別明細を重複扱いするため、意味情報と元行も含める。
-    const fingerprintBase = externalId
-      ? `${options.source}|${options.wallet.id}|external|${externalId}|${date}|${signedAmount}|${description
-          .normalize("NFKC")
-          .trim()}|${rawSignature}`
-      : `${options.source}|${options.wallet.id}|${date}|${signedAmount}|${description
-          .normalize("NFKC")
-          .trim()}|${rawSignature}`;
+    const rawFingerprintBase = externalId
+      ? `${options.source}|${options.wallet.id}|external|${externalId}|${date}|${signedAmount}|${normalizedDescription}|${rawSignature}`
+      : `${options.source}|${options.wallet.id}|${date}|${signedAmount}|${normalizedDescription}|${rawSignature}`;
+    // Vpassは請求確定前後で列構成が変わるため、形式に依存しない項目で
+    // 同じ明細を識別する。旧版で登録済みの7列形式は別名でも照合する。
+    const fingerprintBase =
+      document.format === "smbc-vpass" && !externalId
+        ? `${options.source}|${options.wallet.id}|vpass|${date}|${signedAmount}|${normalizedDescription}|${paymentMonth || ""}`
+        : rawFingerprintBase;
     const occurrence = (occurrences.get(fingerprintBase) || 0) + 1;
     occurrences.set(fingerprintBase, occurrence);
     const importFingerprint = externalId
       ? `csv:${options.source}:${hashString(fingerprintBase)}`
       : `csv:${options.source}:${hashString(fingerprintBase)}:${occurrence}`;
+    let importFingerprintAliases: string[] | undefined;
+    if (document.format === "smbc-vpass") {
+      const legacyOccurrence =
+        (legacyOccurrences.get(rawFingerprintBase) || 0) + 1;
+      legacyOccurrences.set(rawFingerprintBase, legacyOccurrence);
+      const legacyFingerprint = `csv:${options.source}:${hashString(rawFingerprintBase)}:${legacyOccurrence}`;
+      if (legacyFingerprint !== importFingerprint) {
+        importFingerprintAliases = [legacyFingerprint];
+      }
+    }
 
     drafts.push({
       localId: `${importFingerprint}:${row.rowNumber}`,
@@ -959,6 +1075,7 @@ export const buildImportDrafts = (
       ...(paymentMonth ? { paymentMonth } : {}),
       importSource: options.source,
       importFingerprint,
+      ...(importFingerprintAliases ? { importFingerprintAliases } : {}),
       ...(externalId ? { importExternalId: externalId } : {}),
       warnings,
     });
