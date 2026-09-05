@@ -493,16 +493,22 @@ const CsvImportModal: React.FC<CsvImportModalProps> = ({
 
     drafts.forEach((draft) => {
       if (deletedIds.has(draft.localId)) return;
-      if (seen.has(draft.importFingerprint)) {
+      const fingerprints = [
+        draft.importFingerprint,
+        ...(draft.importFingerprintAliases || []),
+      ];
+      if (fingerprints.some((fingerprint) => seen.has(fingerprint))) {
         reasons.set(
           draft.localId,
-          existingFingerprints.has(draft.importFingerprint)
+          fingerprints.some((fingerprint) =>
+            existingFingerprints.has(fingerprint),
+          )
             ? "existing"
             : "file",
         );
         return;
       }
-      seen.add(draft.importFingerprint);
+      fingerprints.forEach((fingerprint) => seen.add(fingerprint));
     });
 
     return reasons;
